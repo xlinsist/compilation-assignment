@@ -1,0 +1,4 @@
+.vscode
+llvm*
+test*
+build/
