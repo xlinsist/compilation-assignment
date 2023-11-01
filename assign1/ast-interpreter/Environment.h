@@ -10,10 +10,7 @@
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Tooling.h"
 
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/PrettyPrinter.h"
-#include "clang/Basic/SourceManager.h"
-#include "llvm/Support/raw_ostream.h"
+#define DEBUG
 
 using namespace clang;
 
@@ -50,7 +47,6 @@ std::string stmtToString(Stmt *stmt) {
 //   // llvm::outs() << printedOutput.str() << "\n";
 // }
 
-
 class StackFrame {
   /// StackFrame maps Variable Declaration to Value
   /// Which are either integer or addresses (also represented using an Integer
@@ -65,22 +61,28 @@ public:
 
   void bindDecl(Decl *decl, int val) {
     printf("debug bindDecl val = %d\n", val);
-    mVars[decl] = val; 
+    mVars[decl] = val;
   }
   int getDeclVal(Decl *decl) {
     assert(mVars.find(decl) != mVars.end());
     printf("debug getDeclVal val = %d\n", mVars.find(decl)->second);
     return mVars.find(decl)->second;
   }
-  void bindStmt(Stmt *stmt, int val) { 
+  void bindStmt(Stmt *stmt, int val) {
     printf("debug bindStmt val = %d\n", val);
-    mExprs[stmt] = val; 
+    mExprs[stmt] = val;
   }
   int getStmtVal(Stmt *stmt) {
-    // printf("debug getStmtVal print stmt = %s\n", stmtToString(stmt).c_str());
-    printf("debug getStmtVal\n");
+#ifndef DEBUG
     assert(mExprs.find(stmt) != mExprs.end());
-    printf("debug getStmtVal val = %d\n",mExprs[stmt]);
+#else
+    if (mExprs.find(stmt) == mExprs.end()) {
+      llvm::errs() << "[ERROR] statement not found\n";
+      stmt->dump();
+      assert(false);
+    }
+#endif
+
     return mExprs[stmt];
   }
   void setPC(Stmt *stmt) { mPC = stmt; }
@@ -128,9 +130,7 @@ public:
           mInput = fdecl;
         else if (fdecl->getName().equals("PRINT")) {
           mOutput = fdecl;
-        }
-          
-        else if (fdecl->getName().equals("main"))
+        } else if (fdecl->getName().equals("main"))
           mEntry = fdecl;
       }
     }
@@ -139,6 +139,16 @@ public:
 
   FunctionDecl *getEntry() { return mEntry; }
 
+  int getExprValue(Expr *expr) {
+    if (IntegerLiteral *literal = dyn_cast<IntegerLiteral>(expr)) {
+      // Deal with constant integer.
+      return literal->getValue().getSExtValue();
+    } else {
+      // Deal with variables.
+      return mStack.back().getStmtVal(expr);
+    }
+  }
+
   /// !TODO Support comparison operation
   void binop(BinaryOperator *bop) {
     printf("debug binop\n");
@@ -146,9 +156,10 @@ public:
     Expr *right = bop->getRHS();
 
     if (bop->isAssignmentOp()) {
-      int val = mStack.back().getStmtVal(right);
-      // printf("debug binop isAssignmentOp get val = %d\n", val);
+      int val = getExprValue(right);
+      // Bind the right value to the left value.
       mStack.back().bindStmt(left, val);
+      // Update the decl if left value is a declaration.
       if (DeclRefExpr *declexpr = dyn_cast<DeclRefExpr>(left)) {
         Decl *decl = declexpr->getFoundDecl();
         mStack.back().bindDecl(decl, val);
@@ -162,8 +173,23 @@ public:
                                  ie = declstmt->decl_end();
          it != ie; ++it) {
       Decl *decl = *it;
-      if (VarDecl *vardecl = dyn_cast<VarDecl>(decl)) {        
-        mStack.back().bindDecl(vardecl, 0);
+      if (VarDecl *vardecl = dyn_cast<VarDecl>(decl)) {
+        QualType type = vardecl->getType();
+        if (type->isIntegerType()) {
+          // Declare the `int a = 1;` situation.
+          if (vardecl->hasInit()) {
+            int val = getExprValue(vardecl->getInit());
+            mStack.back().bindDecl(vardecl, val);
+          } else {
+            // Declare the `int a;` situation and initialize variables to 0.
+            mStack.back().bindDecl(vardecl, 0);
+          }
+        } else {
+          llvm::errs() << "Unhandled decl type\n";
+          declstmt->dump();
+          type->dump();
+          assert(false);
+        }
       }
     }
   }
