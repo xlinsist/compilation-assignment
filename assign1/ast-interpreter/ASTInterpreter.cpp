@@ -12,7 +12,7 @@ using namespace clang;
 
 #include "Environment.h"
 
-/// TODO: what is the usage of this exception?
+// Use ReturnException as a signal to finish a function.
 class ReturnException : public std::exception {};
 
 class InterpreterVisitor : public EvaluatedExprVisitor<InterpreterVisitor> {
@@ -36,6 +36,10 @@ public:
     VisitStmt(expr);
     mEnv->declref(expr);
   }
+  virtual void VisitParenExpr(ParenExpr *parenexpr) {
+    VisitStmt(parenexpr);
+    mEnv->paren(parenexpr);
+  }
   virtual void VisitCastExpr(CastExpr *expr) {
     VisitStmt(expr);
     mEnv->cast(expr);
@@ -43,12 +47,13 @@ public:
   virtual void VisitCallExpr(CallExpr *call) {
     VisitStmt(call);
     if (mEnv->builtinFunc(call)) {
-      // Do nothing.
+      // No need to do extra work.
     } else {
       mEnv->enterFunc(call);
       try {
         VisitStmt(call->getDirectCallee()->getBody());
       } catch (ReturnException e) {
+        // printf("debug a function is successfully processed\n");
       }
       mEnv->exitFunc(call);
     }
@@ -57,6 +62,9 @@ public:
     VisitStmt(ret);
     mEnv->returnStmt(ret->getRetValue());
     throw ReturnException();
+  }
+  virtual void VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *expr) {
+    mEnv->ueot(expr);
   }
   virtual void VisitDeclStmt(DeclStmt *declstmt) {
     VisitStmt(declstmt);
@@ -116,8 +124,9 @@ public:
     // TranslationUnitDecl is the top declaration context of the AST.
     TranslationUnitDecl *decl = Context.getTranslationUnitDecl();
 
-    /// TODO: is there ways to remove this iteration and guarantee we will
-    /// finish visiting all literals before we start to process global variables?
+    /// TODO: is there a way to remove the iteration below but also guarantee we
+    /// will finish visiting all literals before we start to process global
+    /// variables?
     // Process global variables specifically.
     for (TranslationUnitDecl::decl_iterator i = decl->decls_begin(),
                                             e = decl->decls_end();
@@ -135,6 +144,7 @@ public:
     try {
       mVisitor.VisitStmt(entry->getBody());
     } catch (ReturnException e) {
+      // printf("debug the main function is successfully processed\n");
     }
   }
 

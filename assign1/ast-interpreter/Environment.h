@@ -12,61 +12,56 @@
 
 using namespace clang;
 
-// std::string stmtToString(Stmt *stmt) {
-//   clang::LangOptions lo;
-//   std::string out_str;
-//   llvm::raw_string_ostream outstream(out_str);
-//   stmt->printPretty(outstream, NULL, PrintingPolicy(lo));
-//   return out_str;
-// }
-
+// Each StackFrame represents a function. StackFrame maps variable declaration,
+// expressions and pointers to Value, which is represented in the form of either
+// integer or addresses.
 class StackFrame {
-  /// StackFrame maps Variable Declaration to Value
-  /// Which are either integer or addresses (also represented using an Integer
-  /// value)
-  std::map<Decl *, int> mVars;
-  std::map<Stmt *, int> mExprs;
-  std::map<Stmt *, int *> mPtrs;
-  int returnValue; // 保存当前栈帧的返回值，只考虑整数
+  std::map<Decl *, int64_t> mVars;
+  std::map<Stmt *, int64_t> mExprs;
+  std::map<Stmt *, int64_t *> mPtrs;
+  // The return value of the function.
+  int64_t returnValue;
 
 public:
   StackFrame() : mVars(), mExprs(), mPtrs() {}
 
-  void bindDecl(Decl *decl, int val) {
-    printf("debug bindDecl val = %d\n", val);
+  // The following functions update or inquire the maps in StackFrame.
+  void bindDecl(Decl *decl, int64_t val) {
+    printf("debug bindDecl val = %ld\n", val);
     mVars[decl] = val;
   }
-  int getDeclVal(Decl *decl) {
+  int64_t getDeclVal(Decl *decl) {
     assert(mVars.find(decl) != mVars.end());
-    printf("debug getDeclVal val = %d\n", mVars.find(decl)->second);
+    printf("debug getDeclVal val = %ld\n", mVars.find(decl)->second);
     return mVars.find(decl)->second;
   }
   bool hasDecl(Decl *decl) { return (mVars.find(decl) != mVars.end()); }
-  void bindStmt(Stmt *stmt, int val) {
-    printf("debug bindStmt val = %d\n", val);
+  void bindStmt(Stmt *stmt, int64_t val) {
+    printf("debug bindStmt val = %ld\n", val);
     mExprs[stmt] = val;
   }
-  int getStmtVal(Stmt *stmt) {
+  int64_t getStmtVal(Stmt *stmt) {
     if (mExprs.find(stmt) == mExprs.end()) {
       llvm::errs() << "Statement not found\n";
       stmt->dump();
       assert(false);
     }
-    printf("debug getStmtVal val = %d\n", mExprs[stmt]);
+    printf("debug getStmtVal val = %ld\n", mExprs[stmt]);
     return mExprs[stmt];
   }
-  // void bindPtr(Stmt *stmt, int *val) {
-  //   printf("debug bindPtr val = %d\n", *val);
-  //   mPtrs[stmt] = val;
-  // }
-  // int *getPtr(Stmt *stmt) {
-  //   assert(mPtrs.find(stmt) != mPtrs.end());
-  //   return mPtrs[stmt];
-  // }
-  void setReturnValue(int value) { returnValue = value; }
-  int getReturnValue() { return returnValue; }
+  void bindPtr(Stmt *stmt, int64_t *val) {
+    printf("debug bindPtr val = %ld\n", *val);
+    mPtrs[stmt] = val;
+  }
+  int64_t *getPtr(Stmt *stmt) {
+    assert(mPtrs.find(stmt) != mPtrs.end());
+    return mPtrs[stmt];
+  }
+  void setReturnValue(int64_t value) { returnValue = value; }
+  int64_t getReturnValue() { return returnValue; }
 };
 
+// Environment is where the procedure execute.
 class Environment {
   std::vector<StackFrame> mStack;
   // Declartions to the built-in functions.
@@ -76,22 +71,24 @@ class Environment {
   FunctionDecl *mOutput;
   FunctionDecl *mEntry;
   // Maps for global variables.
-  std::map<Decl *, int> gVars;
+  std::map<Decl *, int64_t> gVars;
 
 public:
-  /// Get the declartions to the built-in functions.
+  // Get the declartions to the built-in functions.
   Environment()
       : mStack(), mFree(NULL), mMalloc(NULL), mInput(NULL), mOutput(NULL),
         mEntry(NULL) {
+    // Initialize a temporary StackFrame to process global variables.
     mStack.push_back(StackFrame());
   }
 
-  int getExprValue(Expr *expr) { return mStack.back().getStmtVal(expr); }
-
+  // `getExprValue` and `getEntry` are called by ASTInterpreter.cpp.
+  int64_t getExprValue(Expr *expr) { return mStack.back().getStmtVal(expr); }
   FunctionDecl *getEntry() { return mEntry; }
 
+  // Save the result of a function with return value.
   void returnStmt(Expr *retexpr) {
-    int returnValue = mStack.back().getStmtVal(retexpr);
+    int64_t returnValue = mStack.back().getStmtVal(retexpr);
     mStack.back().setReturnValue(returnValue);
   }
 
@@ -100,8 +97,7 @@ public:
     for (TranslationUnitDecl::decl_iterator i = unit->decls_begin(),
                                             e = unit->decls_end();
          i != e; ++i) {
-      // The decls consists of TypedefDecl(unrelevant here), VarDecl and
-      // FunctionDecl.
+      // Process functions.
       if (FunctionDecl *fdecl = dyn_cast<FunctionDecl>(*i)) {
         if (fdecl->getName().equals("FREE"))
           mFree = fdecl;
@@ -114,24 +110,26 @@ public:
         else if (fdecl->getName().equals("main"))
           mEntry = fdecl;
       }
-      // Set global variables.
+      // Process global variables. They are directly stored in a map settled in
+      // the Environment.
       else if (VarDecl *vardecl = dyn_cast<VarDecl>(*i)) {
         if (vardecl->hasInit()) {
-          int val = mStack.back().getStmtVal(vardecl->getInit());
+          int64_t val = mStack.back().getStmtVal(vardecl->getInit());
           gVars[vardecl] = val;
         } else {
           gVars[vardecl] = 0;
         }
       }
     }
+    // Delete the temporary StackFrame and start a new StackFrame.
     mStack.pop_back();
     mStack.push_back(StackFrame());
   }
 
-  /// TODO: Why design like this?
-  // Adding all literals into mStack to help procedures access them by getStmtVal.
+  // Adding all literals into mStack to help procedures access them by
+  // getStmtVal, for literals(the form of constant numbers) are seen as a kind
+  // of expressions.
   void literal(Expr *expr) {
-    printf("debug literal begin\n");
     if (IntegerLiteral *literal = dyn_cast<IntegerLiteral>(expr)) {
       mStack.back().bindStmt(expr, literal->getValue().getSExtValue());
     } else {
@@ -140,26 +138,62 @@ public:
     }
   }
 
+  // Deal with `sizeof` in a statement.
+  void ueot(UnaryExprOrTypeTraitExpr *ueotexpr) {
+    UnaryExprOrTypeTrait kind = ueotexpr->getKind();
+    int64_t result = 0;
+    if (kind == UETT_SizeOf) {
+      result = sizeof(int64_t);
+    } else {
+      llvm::errs() << "Unsupported UEOT\n";
+      assert(false);
+    }
+    mStack.back().bindStmt(ueotexpr, result);
+  }
+
+  // Deal with `*(a+1)` in a statement.
+  void paren(ParenExpr *parenexpr) {
+    mStack.back().bindStmt(parenexpr,
+                           mStack.back().getStmtVal(parenexpr->getSubExpr()));
+  }
+
   void binop(BinaryOperator *bop) {
     printf("debug binop\n");
     Expr *left = bop->getLHS();
     Expr *right = bop->getRHS();
-    int result = 0;
-    int rightValue = mStack.back().getStmtVal(right);
+    int64_t result = 0;
+    int64_t rightValue = mStack.back().getStmtVal(right);
 
     if (bop->isAssignmentOp()) {
       if (DeclRefExpr *declexpr = dyn_cast<DeclRefExpr>(left)) {
         Decl *decl = declexpr->getFoundDecl();
         mStack.back().bindDecl(decl, rightValue);
+      }
+      // Deal with `*a = 1` situation.
+      else if (UnaryOperator *uop = dyn_cast<UnaryOperator>(left)) {
+        assert(uop->getOpcode() == UO_Deref);
+        int64_t *ptr = mStack.back().getPtr(left);
+        *ptr = rightValue;
       } else {
         llvm::errs() << "Unsupported left value type in binop\n";
         assert(false);
       }
       result = rightValue;
     } else {
-      int leftValue = mStack.back().getStmtVal(left);
+      int64_t leftValue = mStack.back().getStmtVal(left);
       typedef BinaryOperatorKind Opcode;
       Opcode opc = bop->getOpcode();
+
+      // In `*a+1` situation, the unit movement distance is sizeof(int64_t).
+      if (left->getType()->isPointerType() &&
+          right->getType()->isIntegerType()) {
+        assert(opc == BO_Add || opc == BO_Sub);
+        rightValue = rightValue * sizeof(int64_t);
+      } else if (left->getType()->isIntegerType() &&
+                 right->getType()->isPointerType()) {
+        assert(opc == BO_Add || opc == BO_Sub);
+        leftValue = leftValue * sizeof(int64_t);
+      }
       if (opc == BO_Add)
         result = leftValue + rightValue;
       else if (opc == BO_Sub)
@@ -190,8 +224,8 @@ public:
 
   void unaryop(UnaryOperator *uop) {
     printf("debug unaryop\n");
-    int value = mStack.back().getStmtVal(uop->getSubExpr());
-    int result = 0;
+    int64_t value = mStack.back().getStmtVal(uop->getSubExpr());
+    int64_t result = 0;
     typedef UnaryOperatorKind Opcode;
     Opcode opc = uop->getOpcode();
     if (opc == UO_Plus)
@@ -202,7 +236,19 @@ public:
       result = ~value;
     else if (opc == UO_LNot)
       result = !value;
-    else {
+    else if (opc == UO_PostInc)
+      result = value++;
+    else if (opc == UO_PostDec)
+      result = value--;
+    else if (opc == UO_PreInc)
+      result = ++value;
+    else if (opc == UO_PreDec)
+      result = --value;
+    else if (opc == UO_Deref) {
+      printf("debug start to bindPtr in unaryop\n");
+      mStack.back().bindPtr(uop, (int64_t *)value);
+      result = *(int64_t *)value;
+    } else {
       llvm::errs() << "Unsupported operation in unaryop\n";
       assert(false);
     }
@@ -211,21 +257,21 @@ public:
 
   void decl(DeclStmt *declstmt) {
     printf("debug decl\n");
-    // We may declare multiple variables in the same statement like `int a,
-    // b;`
+    // We may declare multiple variables in the same statement like `int a, b`.
     for (DeclStmt::decl_iterator it = declstmt->decl_begin(),
                                  ie = declstmt->decl_end();
          it != ie; ++it) {
       Decl *decl = *it;
       if (VarDecl *vardecl = dyn_cast<VarDecl>(decl)) {
         QualType type = vardecl->getType();
-        if (type->isIntegerType()) {
-          // Declare the `int a = 1` and other situations.
+        if (type->isIntegerType() || type->isPointerType()) {
+          // Declare `int64_t a = 1` and `int64_t *a = MALLOC(4)` situations.
           if (vardecl->hasInit()) {
-            int val = mStack.back().getStmtVal(vardecl->getInit());
+            int64_t val = mStack.back().getStmtVal(vardecl->getInit());
             mStack.back().bindDecl(vardecl, val);
           } else {
-            // Declare the `int a` situation and initialize variables to 0.
+            // Declare `int64_t a` and `int64_t *a` situations and initialize
+            // them to 0.
             mStack.back().bindDecl(vardecl, 0);
           }
         } else {
@@ -238,15 +284,13 @@ public:
     }
   }
 
-  /// TODO: where do DeclRefExpr come from
-  /// TODO: can we just not bind the stmt again
-  // Bind the stmt of decl.
+  // Bind the stmt of declref, becuase it is viewed as a kind of expressions.
   void declref(DeclRefExpr *declref) {
     printf("debug declref\n");
     QualType type = declref->getType();
-    if (type->isIntegerType()) {
+    if (type->isIntegerType() || type->isPointerType()) {
       Decl *decl = declref->getFoundDecl();
-      int val;
+      int64_t val;
       if (mStack.back().hasDecl(decl)) {
         // Get val from local variables.
         val = mStack.back().getDeclVal(decl);
@@ -261,7 +305,7 @@ public:
       }
       mStack.back().bindStmt(declref, val);
     } else if (type->isFunctionProtoType()) {
-      // Do nothing.
+      // Just do nothing.
     } else {
       llvm::errs() << "Unsupported declref type in declref\n";
       declref->dump();
@@ -269,14 +313,14 @@ public:
     }
   }
 
-  /// TODO: where do ImplicitCastExpr come from
   // Deal with ImplicitCastExpr.
   void cast(CastExpr *castexpr) {
     printf("debug cast\n");
     QualType type = castexpr->getType();
-    if (type->isIntegerType()) {
+    if (type->isIntegerType() ||
+        (type->isPointerType() && !type->isFunctionPointerType())) {
       Expr *expr = castexpr->getSubExpr();
-      int val = mStack.back().getStmtVal(expr);
+      int64_t val = mStack.back().getStmtVal(expr);
       mStack.back().bindStmt(castexpr, val);
     } else if (type->isFunctionPointerType()) {
       // Just do nothing, since we can catch the function in `enterFunc`.
@@ -302,18 +346,18 @@ public:
 
   // Exit the previous function and bind the result to the current function.
   void exitFunc(CallExpr *callexpr) {
-    int returnValue = mStack.back().getReturnValue();
+    int64_t returnValue = mStack.back().getReturnValue();
     mStack.pop_back();
     mStack.back().bindStmt(callexpr, returnValue);
   }
 
   // Judge if the function is a builtin function.
   bool builtinFunc(CallExpr *callexpr) {
-    int val = 0;
+    int64_t val = 0;
     FunctionDecl *callee = callexpr->getDirectCallee();
     if (callee == mInput) {
       llvm::errs() << "Please Input an Integer Value : ";
-      scanf("%d", &val);
+      scanf("%ld", &val);
       mStack.back().bindStmt(callexpr, val);
     } else if (callee == mOutput) {
       Expr *decl = callexpr->getArg(0);
@@ -321,15 +365,12 @@ public:
       llvm::errs() << val;
       mStack.back().bindStmt(callexpr, 0);
     } else if (callee == mMalloc) {
-      // int size = mStack.back().getStmtVal(callexpr->getArg(0));
-      // mStack.back().bindStmt(callexpr, (int)malloc(size));
-      /// TODO:
-      assert(false);
+      int64_t size = mStack.back().getStmtVal(callexpr->getArg(0));
+      mStack.back().bindStmt(callexpr, reinterpret_cast<int64_t>(malloc(size)));
     } else if (callee == mFree) {
-      // int64_t *ptr = (int64_t
-      // *)mStack.back().getStmtVal(callexpr->getArg(0)); free(ptr);
-      /// TODO:
-      assert(false);
+      int64_t *ptr = reinterpret_cast<int64_t *>(
+          mStack.back().getStmtVal(callexpr->getArg(0)));
+      free(ptr);
     } else {
       return false;
     }
