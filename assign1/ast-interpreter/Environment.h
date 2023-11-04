@@ -27,17 +27,17 @@ public:
 
   // The following functions update or inquire the maps in StackFrame.
   void bindDecl(Decl *decl, int64_t val) {
-    printf("debug bindDecl val = %ld\n", val);
+    // printf("debug bindDecl val = %ld\n", val);
     mVars[decl] = val;
   }
   int64_t getDeclVal(Decl *decl) {
     assert(mVars.find(decl) != mVars.end());
-    printf("debug getDeclVal val = %ld\n", mVars.find(decl)->second);
+    // printf("debug getDeclVal val = %ld\n", mVars.find(decl)->second);
     return mVars.find(decl)->second;
   }
   bool hasDecl(Decl *decl) { return (mVars.find(decl) != mVars.end()); }
   void bindStmt(Stmt *stmt, int64_t val) {
-    printf("debug bindStmt val = %ld\n", val);
+    // printf("debug bindStmt val = %ld\n", val);
     mExprs[stmt] = val;
   }
   int64_t getStmtVal(Stmt *stmt) {
@@ -46,11 +46,11 @@ public:
       stmt->dump();
       assert(false);
     }
-    printf("debug getStmtVal val = %ld\n", mExprs[stmt]);
+    // printf("debug getStmtVal val = %ld\n", mExprs[stmt]);
     return mExprs[stmt];
   }
   void bindPtr(Stmt *stmt, int64_t *val) {
-    printf("debug bindPtr val = %ld\n", *val);
+    // printf("debug bindPtr val = %ld\n", *val);
     mPtrs[stmt] = val;
   }
   int64_t *getPtr(Stmt *stmt) {
@@ -157,8 +157,17 @@ public:
                            mStack.back().getStmtVal(parenexpr->getSubExpr()));
   }
 
+  void array(ArraySubscriptExpr *arraysubscript) {
+    Expr *base = arraysubscript->getBase();
+    Expr *index = arraysubscript->getIdx();
+    int64_t *basePtr = (int64_t *)mStack.back().getStmtVal(base);
+    int64_t indexVal = mStack.back().getStmtVal(index);
+    mStack.back().bindPtr(arraysubscript, basePtr + indexVal);
+    mStack.back().bindStmt(arraysubscript, *(basePtr + indexVal));
+  }
+
   void binop(BinaryOperator *bop) {
-    printf("debug binop\n");
+    // printf("debug binop\n");
     Expr *left = bop->getLHS();
     Expr *right = bop->getRHS();
     int64_t result = 0;
@@ -171,7 +180,12 @@ public:
       }
       // Deal with `*a = 1` situation.
       else if (UnaryOperator *uop = dyn_cast<UnaryOperator>(left)) {
-        assert(uop->getOpcode() == UO_Deref);
+        int64_t *ptr = mStack.back().getPtr(left);
+        *ptr = rightValue;
+      }
+      // Deal with `a[0] = 1` situation.
+      else if (isa<ArraySubscriptExpr>(left)) {
+        // ptr is assigned by calculating the address for the index of an array.
         int64_t *ptr = mStack.back().getPtr(left);
         *ptr = rightValue;
       } else {
@@ -223,7 +237,7 @@ public:
   }
 
   void unaryop(UnaryOperator *uop) {
-    printf("debug unaryop\n");
+    // printf("debug unaryop\n");
     int64_t value = mStack.back().getStmtVal(uop->getSubExpr());
     int64_t result = 0;
     typedef UnaryOperatorKind Opcode;
@@ -245,7 +259,7 @@ public:
     else if (opc == UO_PreDec)
       result = --value;
     else if (opc == UO_Deref) {
-      printf("debug start to bindPtr in unaryop\n");
+      // printf("debug start to bindPtr in unaryop\n");
       mStack.back().bindPtr(uop, (int64_t *)value);
       result = *(int64_t *)value;
     } else {
@@ -256,7 +270,7 @@ public:
   }
 
   void decl(DeclStmt *declstmt) {
-    printf("debug decl\n");
+    // printf("debug decl\n");
     // We may declare multiple variables in the same statement like `int a, b`.
     for (DeclStmt::decl_iterator it = declstmt->decl_begin(),
                                  ie = declstmt->decl_end();
@@ -274,6 +288,18 @@ public:
             // them to 0.
             mStack.back().bindDecl(vardecl, 0);
           }
+        }
+        // Declare `int a[10]` situation.
+        else if (type->isArrayType()) {
+          // Initialze an empty array.
+          const ConstantArrayType *array =
+              dyn_cast<ConstantArrayType>(type.getTypePtr());
+          int size = array->getSize().getSExtValue();
+          int64_t *newArray = new int64_t[size];
+          for (int i = 0; i < size; i++) {
+            newArray[i] = 0;
+          }
+          mStack.back().bindDecl(vardecl, (int64_t)newArray);
         } else {
           llvm::errs() << "Unsupported decl type in decl\n";
           declstmt->dump();
@@ -286,9 +312,9 @@ public:
 
   // Bind the stmt of declref, becuase it is viewed as a kind of expressions.
   void declref(DeclRefExpr *declref) {
-    printf("debug declref\n");
+    // printf("debug declref\n");
     QualType type = declref->getType();
-    if (type->isIntegerType() || type->isPointerType()) {
+    if (type->isIntegerType() || type->isPointerType() || type->isArrayType()) {
       Decl *decl = declref->getFoundDecl();
       int64_t val;
       if (mStack.back().hasDecl(decl)) {
@@ -315,7 +341,7 @@ public:
 
   // Deal with ImplicitCastExpr.
   void cast(CastExpr *castexpr) {
-    printf("debug cast\n");
+    // printf("debug cast\n");
     QualType type = castexpr->getType();
     if (type->isIntegerType() ||
         (type->isPointerType() && !type->isFunctionPointerType())) {

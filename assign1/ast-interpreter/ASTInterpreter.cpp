@@ -36,6 +36,10 @@ public:
     VisitStmt(expr);
     mEnv->declref(expr);
   }
+  virtual void VisitArraySubscriptExpr(ArraySubscriptExpr *arrayexpr) {
+    VisitStmt(arrayexpr);
+    mEnv->array(arrayexpr);
+  }
   virtual void VisitParenExpr(ParenExpr *parenexpr) {
     VisitStmt(parenexpr);
     mEnv->paren(parenexpr);
@@ -164,7 +168,7 @@ public:
 
 int main(int argc, char **argv) {
   if (argc > 1) {
-    printf("debug start\n");
+    // printf("debug start\n");
     clang::tooling::runToolOnCode(
         std::unique_ptr<clang::FrontendAction>(new InterpreterClassAction),
         argv[1]);
