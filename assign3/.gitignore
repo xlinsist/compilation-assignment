@@ -1,0 +1,13 @@
+# build
+build
+llvmassignment
+
+# testfile
+test*
+
+# LLVM IR
+*.bc
+*.ll
+
+# Checker
+assign2-checker
